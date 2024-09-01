@@ -2,6 +2,7 @@ use clap::{Arg, Command};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::process::Command;
 
 #[derive(Serialize, Deserialize)]
 struct StatefulContainer {
@@ -10,7 +11,20 @@ struct StatefulContainer {
     history: Vec<String>,
 }
 
+fn check_docker() -> bool {
+    match Command::new("docker").arg("--version").output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
 fn handle_create(name: &str, image: &str) {
+    if !check_docker() {
+        eprintln!("Docker is not available on this system. Please ensure Docker is installed and try again.");
+        return;
+    }
+
+    // Load existing stateful containers from the config file
     let mut containers = load_containers();
 
     if containers.iter().any(|c| c.name == name) {
@@ -18,6 +32,7 @@ fn handle_create(name: &str, image: &str) {
         return;
     }
 
+    // Create a new stateful container entry
     let container = StatefulContainer {
         name: name.to_string(),
         image: image.to_string(),
