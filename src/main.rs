@@ -254,6 +254,26 @@ fn main() {
         )
         .get_matches();
 
+    if let Some(matches) = matches.subcommand_matches("create") {
+        let name = matches.get_one::<String>("name").unwrap();
+        let image = matches.get_one::<String>("image").unwrap();
+        handle_create(name, image);
+    }
+
+    if let Some(matches) = matches.subcommand_matches("start") {
+        let name = matches.get_one::<String>("name").unwrap();
+        handle_start(name);
+    }
+
+    if let Some(matches) = matches.subcommand_matches("stop") {
+        let name = matches.get_one::<String>("name").unwrap();
+        handle_stop(name);
+    }
+
+    if let Some(_) = matches.subcommand_matches("list") {
+        handle_list();
+    }
+
     if let Some(matches) = matches.subcommand_matches("config") {
         if let Some(set_matches) = matches.subcommand_matches("set") {
             let key = set_matches.get_one::<String>("key").unwrap();
@@ -263,19 +283,5 @@ fn main() {
             handle_config_show();
         }
     }
-
-    if let Some(matches) = matches.subcommand_matches("start") {
-        let name = matches.get_one::<String>("name").unwrap();
-        handle_start(name);
-    }
-    
-    if let Some(matches) = matches.subcommand_matches("stop") {
-        let name = matches.get_one::<String>("name").unwrap();
-        handle_stop(name);
-    }
-    
-    if let Some(_) = matches.subcommand_matches("list") {
-        handle_list();
-    }
-    
 }
+
