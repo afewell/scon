@@ -1,0 +1,13 @@
+[
+    {
+        "name": "test_container",
+        "image": "ubuntu:latest",
+        "history": [
+            {
+                "container_id": "docker: Error response from daemon: Conflict. The container name \"/test_container\" is already in use by container \"0ca4dcaf0f2c0d3d49b64ce3e38bf178c692edf164dd534d5a692dd71a515add\". You have to remove (or rename) that container to be able to reuse that name.\nSee 'docker run --help'.",
+                "timestamp": "2024-09-01T20:52:05.584451",
+                "image": "ubuntu:latest"
+            }
+        ]
+    }
+]

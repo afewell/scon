@@ -1,0 +1,1 @@
+# scon/__init__.py

@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "scon"
+version = "0.1.0"
+description = "Stateful Containers - Automate Preserving the State Of Your Containers while Developing"
+authors = ["afewell <afewell@gmail.com>"]
+license = "MIT License"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
