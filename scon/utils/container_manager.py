@@ -2,6 +2,58 @@ from scon.utils import json_storage
 import subprocess
 from datetime import datetime
 
+DEFAULT_MAX_SNAPSHOTS = 5
+
+def cleanup_old_snapshots(container_name, max_snapshots=DEFAULT_MAX_SNAPSHOTS):
+    containers = json_storage.load_stateful_containers()
+
+    container = next((c for c in containers if c['name'] == container_name), None)
+    if not container:
+        return
+
+    if len(container['history']) > max_snapshots:
+        # Sort snapshots by timestamp and delete the oldest ones
+        sorted_history = sorted(container['history'], key=lambda x: x['timestamp'])
+        to_delete = sorted_history[:-max_snapshots]
+
+        for entry in to_delete:
+            delete_command = f"docker rmi {entry['image']}"
+            subprocess.run(delete_command, shell=True)
+            container['history'].remove(entry)
+
+        json_storage.save_stateful_containers(containers)
+        print(f"Deleted {len(to_delete)} old snapshots for container '{container_name}'.")
+
+# Example usage in snapshot handling
+def handle_snapshot(name):
+    config = json_storage.load_config()
+    containers = json_storage.load_stateful_containers()
+
+    container = next((c for c in containers if c['name'] == name), None)
+    if container is None:
+        print(f"Stateful container '{name}' not found.")
+        return
+
+    snapshot_name = f"{name}_snapshot_{int(time.time())}"
+    commit_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} commit {name} {snapshot_name}"
+    
+    print(f"Creating snapshot for container '{name}' as '{snapshot_name}'...")
+    result = subprocess.run(commit_command, shell=True)
+    
+    if result.returncode == 0:
+        container['history'].append({
+            "container_id": subprocess.getoutput(f"{config['container_runtime']} ps -q -f name={name}").strip(),
+            "timestamp": datetime.utcnow().isoformat(),
+            "image": snapshot_name
+        })
+        json_storage.save_stateful_containers(containers)
+        print(f"Snapshot created successfully as '{snapshot_name}'")
+
+        # Clean up old snapshots
+        cleanup_old_snapshots(name, config.get('max_snapshots', DEFAULT_MAX_SNAPSHOTS))
+    else:
+        print(f"Failed to create snapshot for container '{name}'")
+
 def docker_container_exists(name):
     config = load_config()
     check_command = f"{config['container_runtime']} ps -a -q -f name={name}"
