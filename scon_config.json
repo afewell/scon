@@ -1,9 +1,4 @@
-[
-  {
-    "name": "my_container",
-    "image": "ubuntu:latest",
-    "history": [
-      "ubuntu:latest"
-    ]
-  }
-]
+{
+  "use_sudo": true,
+  "container_runtime": "docker"
+}
