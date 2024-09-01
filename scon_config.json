@@ -1,4 +1,0 @@
-{
-  "use_sudo": false,
-  "container_runtime": "docker"
-}
