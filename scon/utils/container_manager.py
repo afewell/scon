@@ -1,13 +1,14 @@
-from scon.utils import json_storage
 import subprocess
-from datetime import datetime
+from scon.utils import json_storage
+from datetime import datetime, timedelta
+from scon.utils.json_storage import load_config, load_stateful_containers, save_stateful_containers
 
 DEFAULT_MAX_SNAPSHOTS = 5
 DEFAULT_RETENTION_DAYS = 30
 
 def handle_snapshot(name):
-    config = json_storage.load_config()
-    containers = json_storage.load_stateful_containers()
+    config = load_config()
+    containers = load_stateful_containers()
 
     container = next((c for c in containers if c['name'] == name), None)
     if container is None:
@@ -31,7 +32,7 @@ def handle_snapshot(name):
             "tagged": tagged
         })
 
-        json_storage.save_stateful_containers(containers)
+        save_stateful_containers(containers)
         print(f"Snapshot created successfully as '{snapshot_name}'{' (Tagged)' if tagged else ''}")
 
         # Clean up old untagged snapshots
@@ -39,19 +40,14 @@ def handle_snapshot(name):
     else:
         print(f"Failed to create snapshot for container '{name}'")
 
-def cleanup_old_snapshots(container_name):
-    config = json_storage.load_config()
-    max_snapshots = config.get('max_snapshots', DEFAULT_MAX_SNAPSHOTS)
-    retention_days = config.get('retention_days', DEFAULT_RETENTION_DAYS)
-    
-    containers = json_storage.load_stateful_containers()
+def cleanup_old_snapshots(container_name, max_snapshots=DEFAULT_MAX_SNAPSHOTS, retention_days=DEFAULT_RETENTION_DAYS):
+    containers = load_stateful_containers()
     cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
 
     container = next((c for c in containers if c['name'] == container_name), None)
     if not container:
         return
 
-    # Filter out tagged snapshots and the original image
     untagged_snapshots = [entry for entry in container['history'] if not entry.get('tagged', False) and entry['image'] != container.get('original_image')]
     old_snapshots = [entry for entry in untagged_snapshots if datetime.fromisoformat(entry['timestamp']) < cutoff_date]
 
@@ -61,10 +57,9 @@ def cleanup_old_snapshots(container_name):
             subprocess.run(delete_command, shell=True)
             container['history'].remove(entry)
 
-        json_storage.save_stateful_containers(containers)
+        save_stateful_containers(containers)
         print(f"Deleted {len(old_snapshots)} old snapshots for container '{container_name}' that were older than {retention_days} days.")
 
-    # Also enforce the max snapshot limit after time-based cleanup
     if len(untagged_snapshots) > max_snapshots:
         sorted_untagged = sorted(untagged_snapshots, key=lambda x: x['timestamp'])
         to_delete = sorted_untagged[:-max_snapshots]
@@ -74,7 +69,7 @@ def cleanup_old_snapshots(container_name):
             subprocess.run(delete_command, shell=True)
             container['history'].remove(entry)
 
-        json_storage.save_stateful_containers(containers)
+        save_stateful_containers(containers)
         print(f"Deleted {len(to_delete)} old untagged snapshots for container '{container_name}'.")
 
 def docker_container_exists(name):
@@ -95,106 +90,94 @@ def check_docker():
         return False
 
 def handle_create(name, image):
-    if not check_docker():
-        print("Docker is not available on this system. Please ensure Docker is installed and try again.")
+    containers = load_stateful_containers()
+
+    if docker_container_exists(name):
+        print(f"A Docker container with the name '{name}' already exists. Please choose a different name.")
         return
 
-    containers = json_storage.load_stateful_containers()
-
-    if any(c['name'] == name for c in containers):
-        print(f"A stateful container with the name '{name}' already exists.")
-        return
-
-    container = {
+    container_entry = create_container_entry(name, image, None)
+    containers.append({
         "name": name,
-        "image": image,
-        "original_image": args.image,
-        "history": []
-    }
+        "containers": [container_entry],
+        "snapshots": [],
+        "next_snapshot_to_start": None,
+        "deleted": []
+    })
 
-    containers.append(container)
-    json_storage.save_stateful_containers(containers)
-    print(f"Stateful container '{args.name}' created with base image '{args.image}'")
+    save_stateful_containers(containers)
+    print(f"Stateful container '{name}' created with base image '{image}'.")
 
 def handle_start(name):
     config = load_config()
     containers = load_stateful_containers()
 
-    # Check if the SC exists
-    container = next((c for c in containers if c['name'] == name), None)
-    if container is None:
+    container_data = next((c for c in containers if c['name'] == name), None)
+    if not container_data:
         print(f"Stateful container '{name}' not found.")
         return
 
-    # Check if a Docker container with the same name already exists
-    if docker_container_exists(name):
+    # Check if a container with this name is already running
+    running_container_id = docker_container_exists(name)
+    if running_container_id:
         print(f"Error: A Docker container with the name '{name}' already exists.")
-        print(f"Please delete the existing container or choose a different name.")
-        print(f"You can list your existing containers with `{get_runtime_command()} ps -a`.")
-        print(f"To delete an existing container, use `{get_runtime_command()} rm {name}`.")
+        print("Please delete the existing container or choose a different name.")
         return
 
-    # Start the new container from the latest snapshot
-    command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} run -d --name {name} {container['image']} sleep infinity"
-    container_id = subprocess.getoutput(command).strip()
+    # Get the next snapshot to start from
+    next_snapshot = container_data['next_snapshot_to_start']
+    if not next_snapshot:
+        print(f"No snapshot found to start container '{name}'.")
+        return
 
-    container['history'].append({
-        "container_id": container_id,
-        "timestamp": datetime.utcnow().isoformat(),
-        "image": container['image']
-    })
+    # Start the new container from the snapshot
+    start_command = f"{config['container_runtime']} run -d --name {name} {next_snapshot['image_id']} sleep infinity"
+    subprocess.run(start_command, shell=True)
+
+    # Log the new container entry
+    container_entry = create_container_entry(name, next_snapshot['image_id'], None)
+    container_data['containers'].append(container_entry)
+    container_entry['status'] = "running"
+
     save_stateful_containers(containers)
-    print(f"Started stateful container '{name}'")
+    print(f"Started container '{name}' from snapshot '{next_snapshot['image_id']}'")
 
-def handle_stop(name, force=False):
+def handle_stop(name):
     config = load_config()
     containers = load_stateful_containers()
 
-    container = next((c for c in containers if c['name'] == name), None)
-    if container is None:
+    container_data = next((c for c in containers if c['name'] == name), None)
+    if not container_data:
         print(f"Stateful container '{name}' not found.")
         return
 
-    check_command = f"{config['container_runtime']} ps -a --filter name={name} --format '{{{{.ID}}}}'"
-    container_id = subprocess.getoutput(check_command).strip()
+    container = container_data['containers'][-1]  # Get the latest container
 
-    if not container_id:
-        print(f"No such container: {name}")
+    if container['status'] == "stopped":
+        print(f"Container '{name}' is already stopped.")
         return
 
-    if not force:
-        confirmation = input(f"Are you sure you want to stop the container '{name}'? This action will save its state. (y/n): ").lower()
-        if confirmation != 'y' and confirmation != 'yes':
-            print("Operation aborted.")
-            return
+    # Stop and rename the container
+    stop_command = f"{config['container_runtime']} stop {container['container_id']}"
+    subprocess.run(stop_command, shell=True)
+    container['status'] = "stopped"
 
-    # Stop the Docker container
-    stop_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} stop {name}"
-    if subprocess.run(stop_command, shell=True).returncode != 0:
-        print(f"Failed to stop container '{name}'")
-        return
+    new_name = f"{name}_stopped_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    rename_command = f"{config['container_runtime']} rename {container['container_id']} {new_name}"
+    subprocess.run(rename_command, shell=True)
 
-    # Commit the container to a new image snapshot
-    new_image_tag = f"{container['name']}:v{len(container['history']) + 1}"
-    commit_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} commit {name} {new_image_tag}"
-    if subprocess.run(commit_command, shell=True).returncode != 0:
-        print(f"Failed to save state of '{name}'")
-        return
+    # Create a snapshot
+    snapshot_name = f"{name}_snapshot_{int(time.time())}"
+    commit_command = f"{config['container_runtime']} commit {new_name} {snapshot_name}"
+    subprocess.run(commit_command, shell=True)
 
-    # Rename the stopped Docker container to free up the name
-    new_container_name = f"{name}_stopped_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-    rename_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} rename {name} {new_container_name}"
-    if subprocess.run(rename_command, shell=True).returncode != 0:
-        print(f"Failed to rename the container '{name}'")
-        return
+    snapshot_entry = create_snapshot_entry(snapshot_name, snapshot_name)
+    container_data['snapshots'].append(snapshot_entry)
+    container_data['next_snapshot_to_start'] = snapshot_entry
 
-    container['history'].append({
-        "container_id": container_id,
-        "timestamp": datetime.utcnow().isoformat(),
-        "image": new_image_tag
-    })
     save_stateful_containers(containers)
-    print(f"Stopped and saved state of '{name}', renamed to '{new_container_name}'")
+    print(f"Stopped and saved state of '{name}', renamed to '{new_name}'")
+
 
 def handle_list():
     containers = json_storage.load_stateful_containers()
@@ -207,42 +190,78 @@ def handle_list():
         print(f"  Current Image: {container['image']}")
         print(f"  History: {container['history']}")
 
+def stop_and_commit_container(name):
+    config = load_config()
+    containers = load_stateful_containers()
+
+    container = next((c for c in containers if c['name'] == name), None)
+    if container is None:
+        print(f"Stateful container '{name}' not found.")
+        return False
+
+    check_command = f"{config['container_runtime']} ps -q -f name={name}"
+    container_id = subprocess.getoutput(check_command).strip()
+
+    if not container_id:
+        print(f"No such container: {name}")
+        return False
+
+    # Stop the Docker container
+    stop_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} stop {name}"
+    if subprocess.run(stop_command, shell=True).returncode != 0:
+        print(f"Failed to stop container '{name}'")
+        return False
+
+    # Rename the stopped container to free up the name
+    rename_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} rename {name} {name}_stopped"
+    subprocess.run(rename_command, shell=True)
+
+    # Commit the current state of the container before deleting
+    new_image_tag = f"{name}_snapshot_{int(time.time())}"
+    commit_command = f"{'sudo ' if config['use_sudo'] else ''}{config['container_runtime']} commit {name}_stopped {new_image_tag}"
+    if subprocess.run(commit_command, shell=True).returncode == 0:
+        container['history'].append({
+            "container_id": container_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "image": new_image_tag
+        })
+        save_stateful_containers(containers)
+        print(f"Committed snapshot for container '{name}' as '{new_image_tag}'")
+        return True
+    else:
+        print(f"Failed to commit snapshot for container '{name}'")
+        return False
+
 def handle_delete(name, option, force=False):
     config = load_config()
     containers = load_stateful_containers()
 
-    # Locate the SC
-    container_index = next((i for i, c in enumerate(containers) if c['name'] == name), None)
-    if container_index is None:
+    container_data = next((c for c in containers if c['name'] == name), None)
+    if not container_data:
         print(f"Stateful container '{name}' not found.")
         return
 
-    container = containers[container_index]
+    # First, stop and commit the container as per the stop logic
+    stop_and_commit_container(name)
 
-    # Use the force option to skip confirmation
-    if not force:
-        confirmation = input(f"Are you sure you want to delete the SC '{name}'? This action cannot be undone. (y/n): ").lower()
-        if confirmation != 'y' and confirmation != 'yes':
-            print("Operation aborted.")
-            return
-
+    # Then, delete the container or snapshot based on the selected option
     if option == "entry-only":
         print(f"Deleting stateful container entry '{name}' but retaining local Docker containers and images.")
-        containers.pop(container_index)
+        container_data['deleted'].append(container_data['containers'][-1])  # Archive the latest container entry
+        containers.remove(container_data)
 
     elif option == "all-snapshots":
         print(f"Deleting all snapshots and the SC entry '{name}'.")
-        delete_container_images(container)
-        containers.pop(container_index)
+        container_data['deleted'].extend(container_data['snapshots'])  # Archive all snapshots
+        containers.remove(container_data)
 
     elif option == "keep-latest-snapshot":
         print(f"Deleting all but the latest snapshot for stateful container '{name}'.")
-        delete_all_but_latest_image(container)
-        containers.pop(container_index)
+        container_data['deleted'].extend(container_data['snapshots'][:-1])  # Archive old snapshots
+        container_data['snapshots'] = [container_data['snapshots'][-1]]
 
-    # Save the updated state of containers
     save_stateful_containers(containers)
-    print(f"Deleted stateful container '{name}'")
+    print(f"Deleted stateful container '{name}' with option '{option}'.")
 
 def delete_container_images(container):
     config = load_config()

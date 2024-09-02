@@ -38,9 +38,26 @@ def load_config():
     return load_json_file(CONFIG_PATH, {
         "use_sudo": False,
         "container_runtime": "docker",
-        "max_snapshots": DEFAULT_MAX_SNAPSHOTS,  # Default value
-        "retention_days": DEFAULT_RETENTION_DAYS  # Default value
+        "max_snapshots": DEFAULT_MAX_SNAPSHOTS,
+        "retention_days": DEFAULT_RETENTION_DAYS
     })
 
 def save_config(config):
     save_json_file(CONFIG_PATH, config)
+
+# Container and Snapshot structures
+def create_container_entry(name, image, container_id):
+    return {
+        "name": name,
+        "container_id": container_id,
+        "image": image,
+        "created_at": datetime.utcnow().isoformat(),
+        "status": "created"
+    }
+
+def create_snapshot_entry(name, image_id):
+    return {
+        "name": name,
+        "image_id": image_id,
+        "created_at": datetime.utcnow().isoformat()
+    }
